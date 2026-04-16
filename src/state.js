@@ -79,6 +79,8 @@ export function createState() {
     retryDelayMs: 200,
     retryExpoMultiplier: 2,
     retryJitter: true,
+    maxHedges: 0,
+    hedgeDelayMs: 1000,
     circuitBreakerEnabled: false,
     circuitBreakerThreshold: 5,
     circuitBreakerResetMs: 10000,
@@ -89,7 +91,7 @@ export function createState() {
     continuousRequests: 3,
     continuousWindowSec: 5,
     burstSize: 10,
-    stats: { total: 0, success: 0, errors: 0, rateLimit: 0, retries: 0, droppedContinuous: 0 },
+    stats: { total: 0, success: 0, errors: 0, rateLimit: 0, retries: 0, hedges: 0, droppedContinuous: 0 },
 
     // ── Replay / simulation mode ───────────────────────────────
     simulationMode: 'free-play', // 'free-play' | 'scenario'

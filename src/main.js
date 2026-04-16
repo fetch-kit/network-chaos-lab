@@ -41,6 +41,3 @@ addTicker((delta) => replayEngine.tick(delta))
 
 ui = createUI({ container, state, runner, replayEngine })
 
-// Auto-start
-runner.start()
-

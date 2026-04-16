@@ -220,6 +220,18 @@ export function createUI({ container, state, runner, replayEngine }) {
         <input id="retry-jitter" type="checkbox" ${state.retryJitter ? 'checked' : ''} />
       </label>
       <label class="legend-item" style="justify-content:space-between">
+        <span>Max hedges</span>
+        <select id="hedge-max" style="width:74px">
+          <option value="0" ${state.maxHedges === 0 ? 'selected' : ''}>0</option>
+          <option value="1" ${state.maxHedges === 1 ? 'selected' : ''}>1</option>
+          <option value="2" ${state.maxHedges === 2 ? 'selected' : ''}>2</option>
+        </select>
+      </label>
+      <div class="legend-item" style="justify-content:space-between">
+        <span>Hedge delay ms</span>
+        <input id="hedge-delay" type="number" min="0" max="5000" value="${state.hedgeDelayMs}" style="width:74px" />
+      </div>
+      <label class="legend-item" style="justify-content:space-between">
         <span>Circuit breaker</span>
         <input id="cb-enabled" type="checkbox" ${state.circuitBreakerEnabled ? 'checked' : ''} />
       </label>
@@ -293,9 +305,16 @@ export function createUI({ container, state, runner, replayEngine }) {
     <div class="stats">
       <span id="stat-total">0 sent</span>
       <span id="stat-retries">↩ 0 retries</span>
+      <span id="stat-hedges" class="hedge-badge-fill">🛡 0 hedges</span>
       <span id="stat-success" style="color:${COLORS_CSS.SUCCESS}">✓ 0</span>
       <span id="stat-errors" style="color:${COLORS_CSS.ERROR}">✗ 0</span>
       <span id="stat-ratelimit" style="color:${COLORS_CSS.RATE_LIMITED}">⊘ 0</span>
+      <span id="stat-latency-mode" style="color:#94a3b8; font-size:11px; grid-column: 1 / -1;">Latency SLO (success only)</span>
+      <span id="stat-p50">p50: -</span>
+      <span id="stat-p95">p95: -</span>
+      <span id="stat-p99">p99: -</span>
+      <span id="stat-latency-samples">latency n: 0</span>
+      <span id="stat-error-rate">error rate: -</span>
     </div>
   `
 
@@ -383,6 +402,8 @@ export function createUI({ container, state, runner, replayEngine }) {
   const retryDelay = panel.querySelector('#retry-delay')
   const retryMult = panel.querySelector('#retry-mult')
   const retryJitter = panel.querySelector('#retry-jitter')
+  const hedgeMax = panel.querySelector('#hedge-max')
+  const hedgeDelay = panel.querySelector('#hedge-delay')
   const cbEnabled = panel.querySelector('#cb-enabled')
   const cbThreshold = panel.querySelector('#cb-threshold')
   const cbReset = panel.querySelector('#cb-reset')
@@ -394,6 +415,8 @@ export function createUI({ container, state, runner, replayEngine }) {
     state.retryDelayMs = Math.max(0, Number(retryDelay.value || 0))
     state.retryExpoMultiplier = Math.max(1, Number(retryMult.value || 1))
     state.retryJitter = retryJitter.checked
+    state.maxHedges = Math.max(0, Math.min(2, Number(hedgeMax.value || 0)))
+    state.hedgeDelayMs = Math.max(0, Number(hedgeDelay.value || 1000))
     state.circuitBreakerEnabled = cbEnabled.checked
     state.circuitBreakerThreshold = Math.max(1, Number(cbThreshold.value || 1))
     state.circuitBreakerResetMs = Math.max(100, Number(cbReset.value || 100))
@@ -405,6 +428,8 @@ export function createUI({ container, state, runner, replayEngine }) {
   retryDelay.addEventListener('change', applyClientSettings)
   retryMult.addEventListener('change', applyClientSettings)
   retryJitter.addEventListener('change', applyClientSettings)
+  hedgeMax.addEventListener('change', applyClientSettings)
+  hedgeDelay.addEventListener('change', applyClientSettings)
   cbEnabled.addEventListener('change', applyClientSettings)
   cbThreshold.addEventListener('change', applyClientSettings)
   cbReset.addEventListener('change', applyClientSettings)
@@ -567,9 +592,15 @@ export function createUI({ container, state, runner, replayEngine }) {
 
   const elTotal = panel.querySelector('#stat-total')
   const elRetries = panel.querySelector('#stat-retries')
+  const elHedges = panel.querySelector('#stat-hedges')
   const elSuccess = panel.querySelector('#stat-success')
   const elErrors = panel.querySelector('#stat-errors')
   const elRateLimit = panel.querySelector('#stat-ratelimit')
+  const elP50 = panel.querySelector('#stat-p50')
+  const elP95 = panel.querySelector('#stat-p95')
+  const elP99 = panel.querySelector('#stat-p99')
+  const elLatencySamples = panel.querySelector('#stat-latency-samples')
+  const elErrorRate = panel.querySelector('#stat-error-rate')
   const elQueued = panel.querySelector('#stat-queued')
   const elBurstQueued = panel.querySelector('#stat-burst-queued')
   const elContQueued = panel.querySelector('#stat-cont-queued')
@@ -579,12 +610,29 @@ export function createUI({ container, state, runner, replayEngine }) {
   const elCircuitStatus = panel.querySelector('#cb-status')
 
   function updateStats(meta = {}) {
+    function fmtLatency(v) {
+      return Number.isFinite(v) ? `${Math.round(v)}ms` : '-'
+    }
+
     const s = state.stats
     elTotal.textContent = `${s.total} sent`
     elRetries.textContent = `↩ ${s.retries} retries`
+    if (elHedges) elHedges.textContent = `🛡 ${s.hedges} hedges`
     elSuccess.textContent = `✓ ${s.success}`
     elErrors.textContent = `✗ ${s.errors}`
     elRateLimit.textContent = `⊘ ${s.rateLimit}`
+    if (meta.latencyStats) {
+      if (elP50) elP50.textContent = `p50: ${fmtLatency(meta.latencyStats.p50)}`
+      if (elP95) elP95.textContent = `p95: ${fmtLatency(meta.latencyStats.p95)}`
+      if (elP99) elP99.textContent = `p99: ${fmtLatency(meta.latencyStats.p99)}`
+    }
+    if (meta.slo) {
+      if (elLatencySamples) elLatencySamples.textContent = `latency n: ${meta.slo.latencySampleCount ?? 0}`
+      if (elErrorRate) {
+        const pct = Number.isFinite(meta.slo.errorRatePct) ? `${meta.slo.errorRatePct.toFixed(1)}%` : '-'
+        elErrorRate.textContent = `error rate: ${pct}`
+      }
+    }
     if (typeof meta.queued === 'number') elQueued.textContent = `Queue: ${meta.queued}`
     if (typeof meta.burstQueued === 'number') elBurstQueued.textContent = `Burst queue: ${meta.burstQueued}`
     if (typeof meta.continuousQueued === 'number') elContQueued.textContent = `Continuous queue: ${meta.continuousQueued}`
@@ -755,6 +803,8 @@ export function createUI({ container, state, runner, replayEngine }) {
     if (typeof r.retryDelayMs === 'number') { state.retryDelayMs = r.retryDelayMs; retryDelay.value = String(r.retryDelayMs) }
     if (typeof r.retryExpoMultiplier === 'number') { state.retryExpoMultiplier = r.retryExpoMultiplier; retryMult.value = String(r.retryExpoMultiplier) }
     if (typeof r.retryJitter === 'boolean') { state.retryJitter = r.retryJitter; retryJitter.checked = r.retryJitter }
+    if (typeof r.maxHedges === 'number') { state.maxHedges = r.maxHedges; hedgeMax.value = String(r.maxHedges) }
+    if (typeof r.hedgeDelayMs === 'number') { state.hedgeDelayMs = r.hedgeDelayMs; hedgeDelay.value = String(r.hedgeDelayMs) }
     if (typeof r.circuitBreakerEnabled === 'boolean') { state.circuitBreakerEnabled = r.circuitBreakerEnabled; cbEnabled.checked = r.circuitBreakerEnabled }
     if (typeof r.circuitBreakerThreshold === 'number') { state.circuitBreakerThreshold = r.circuitBreakerThreshold; cbThreshold.value = String(r.circuitBreakerThreshold) }
     if (typeof r.circuitBreakerResetMs === 'number') { state.circuitBreakerResetMs = r.circuitBreakerResetMs; cbReset.value = String(r.circuitBreakerResetMs) }

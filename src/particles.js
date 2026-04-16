@@ -37,7 +37,7 @@ function getFlameTexture() {
   return FLAME_TEXTURE
 }
 
-function makeRetryMarker(attemptNumber, sizeBoost) {
+function makeRetryMarker(attemptNumber, sizeBoost, badgeType = 'retry', badgeColor = '#f5d547') {
   const canvas = document.createElement('canvas')
   canvas.width = 96
   canvas.height = 96
@@ -47,10 +47,16 @@ function makeRetryMarker(attemptNumber, sizeBoost) {
   ctx.strokeStyle = 'rgba(245,245,245,0.98)'
   ctx.lineWidth = 4
   ctx.fillStyle = 'rgba(10,10,10,1)'
+  // Set text color based on badge type: gold for retry, very dark purple for hedge
+  const textColor = badgeType === 'hedge' ? '#1e1b4b' : '#f5d547'
+  ctx.fillStyle = textColor
   ctx.font = '900 72px sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  const label = String(Math.min(9, Math.max(2, attemptNumber)))
+  // For retries, clamp min to 2 (attempt 1 has no badge). For hedges, show exact index (1, 2, ...)
+  const label = badgeType === 'hedge'
+    ? String(Math.min(9, Math.max(1, attemptNumber)))
+    : String(Math.min(9, Math.max(2, attemptNumber)))
   ctx.strokeText(label, 48, 52)
   ctx.fillText(label, 48, 52)
 
@@ -106,6 +112,10 @@ class Pulse {
     this.mesh.geometry.dispose()
     this.mesh.material.dispose()
   }
+
+  getHedgeGroupId() {
+    return this.hedgeGroupId
+  }
 }
 
 export class RequestParticle {
@@ -113,6 +123,9 @@ export class RequestParticle {
     const spreadKey = Number(options.spreadKey || 0)
     this.scene = scene
     this.attemptNumber = attemptNumber
+    this.hedgeIndex = Number(options.hedgeIndex || 0)
+    this.hedgeGroupId = options.hedgeGroupId || null
+    this.isHedge = options.isHedge || false
     this.getFlightSpeedScale = typeof options.getFlightSpeedScale === 'function'
       ? options.getFlightSpeedScale
       : () => Number(options.flightSpeedScale || 1)
@@ -122,12 +135,16 @@ export class RequestParticle {
     this._time = 0
     this._processingCallbacks = []
     this._doneCallbacks = []
+    this._cancelCallbacks = []
     this._pulses = []
     this._lastPos = from.clone()
     this._velocity = new THREE.Vector3()
     this._forward = new THREE.Vector3(0, 1, 0)
     this._scratchDir = new THREE.Vector3()
     this._scratchQuat = new THREE.Quaternion()
+    this._cancelled = false
+    this._fadeStartTime = null
+    this._fadeDuration = 0.3
 
     const retrySign = attemptNumber % 2 === 1 ? 1 : -1
     const laneSign = spreadKey % 2 === 0 ? 1 : -1
@@ -184,14 +201,24 @@ export class RequestParticle {
     this.mesh.add(this.plumeA)
 
     this.retryMarker = null
-    if (attemptNumber >= 2) {
-      this.retryMarker = makeRetryMarker(attemptNumber, sizeBoost)
+    if (attemptNumber >= 2 || this.isHedge) {
+      const badgeType = this.isHedge ? 'hedge' : 'retry'
+      const badgeColor = this.isHedge ? '#14b8a6' : '#f5d547'
+      this.retryMarker = makeRetryMarker(this.isHedge ? this.hedgeIndex : attemptNumber, sizeBoost, badgeType, badgeColor)
       this.mesh.add(this.retryMarker)
     }
   }
 
   onProcessing(cb) { this._processingCallbacks.push(cb) }
   onDone(cb) { this._doneCallbacks.push(cb) }
+  onCancel(cb) { this._cancelCallbacks.push(cb) }
+
+  cancel() {
+    if (this._cancelled) return
+    this._cancelled = true
+    this._fadeStartTime = this._time
+    this._cancelCallbacks.forEach((cb) => cb())
+  }
 
   setResult(status) {
     if (this.state !== 'processing') return
@@ -220,6 +247,19 @@ export class RequestParticle {
     this._time += delta
 
     this._updatePulses(delta)
+
+    // Handle fade animation for cancelled particles
+    if (this._cancelled && this._fadeStartTime !== null) {
+      const fadeElapsed = this._time - this._fadeStartTime
+      const fadeFraction = Math.min(1, fadeElapsed / this._fadeDuration)
+      const newOpacity = 0.9 * (1 - fadeFraction)
+      this.mat.opacity = newOpacity
+      this.plumeA.material.opacity = 0.24 * (1 - fadeFraction)
+      if (fadeFraction >= 1) {
+        this._markDone()
+      }
+      return
+    }
 
     if (this.state === 'processing') {
       const pulse = 1 + 0.28 * Math.sin(this._time * 7)
