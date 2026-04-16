@@ -120,32 +120,32 @@ export function createRunner({ scene, clientPos, serverPos, state, addTicker, re
     const tick = (dt) => particle.update(dt)
     addTicker(tick)
 
-    // Fire chaos engine and outbound animation in parallel
-    const chaosPromise = applyChaosRules(state.chaosRules, runtime, () => state.networkSpeedBps)
-
-    let particleAtServer = false
     let chaosResult = null
 
-    function tryApply() {
-      if (!particleAtServer || !chaosResult) return
+    function applyResult() {
+      if (!chaosResult) return
       particle.setResult(chaosResult.status)
     }
 
     particle.onProcessing(() => {
-      particleAtServer = true
-      tryApply()
-    })
-
-    chaosPromise.then((result) => {
-      chaosResult = result
-      tryApply()
+      // Start chaos only when the request reaches the server stage so
+      // latency and latencyRange map to visible server processing time.
+      applyChaosRules(state.chaosRules, runtime, () => state.networkSpeedBps)
+        .then((result) => {
+          chaosResult = result
+          applyResult()
+        })
+        .catch(() => {
+          chaosResult = { status: 503, retryAfterMs: 0 }
+          applyResult()
+        })
     })
 
     particle.onDone(() => {
       removeTicker(tick)
       activeAttempts = Math.max(0, activeAttempts - 1)
 
-      const { status, retryAfterMs } = chaosResult
+      const { status, retryAfterMs } = chaosResult || { status: 503, retryAfterMs: 0 }
       recordCircuitOutcome(status)
       const retryable = status === 500 || status === 503 || status === 429
       const retryMode = String(state.retryMode || 'linear')
